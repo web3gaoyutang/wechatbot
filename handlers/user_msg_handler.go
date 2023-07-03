@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"fmt"
+	"github.com/869413421/wechatbot/pay"
 	"github.com/eatmoreapple/openwechat"
+	"github.com/google/uuid"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,8 +16,9 @@ var retryCount = 3
 
 // UserMessageHandler 私聊消息处理
 type UserMessageHandler struct {
-	status map[string]int
-	info   map[string]map[string]interface{}
+	status  map[string]int
+	info    map[string]map[string]interface{}
+	balance map[string]int
 }
 
 // handle 处理消息
@@ -29,6 +33,7 @@ func (g *UserMessageHandler) handle(msg *openwechat.Message) error {
 func NewUserMessageHandler() MessageHandlerInterface {
 	a := UserMessageHandler{}
 	a.status = make(map[string]int)
+	a.balance = make(map[string]int)
 	a.info = make(map[string]map[string]interface{})
 	return &a
 }
@@ -64,6 +69,35 @@ func (g *UserMessageHandler) Reply0(msg *openwechat.Message) error {
 	//fmt.Println(requestText)
 
 	if requestText == "开始算命" {
+		//msg.ReplyText("请输入出生年月，示例：2020-01-01 22:00")
+		if g.balance[sender.ID()] == 0 {
+			msg.ReplyText("欢迎使用算命大师服务，请点击链接进行支付")
+			orderId := uuid.New().String()
+			g.info[sender.ID()] = make(map[string]interface{})
+			g.info[sender.ID()]["order_id"] = orderId
+			payUrl, err := pay.Pay(orderId, "0.1")
+			if err != nil {
+				msg.ReplyText("支付出错啦")
+			}
+			msg.ReplyText(payUrl)
+			for i := 0; i < 30; i++ {
+				fmt.Println("coming")
+				time.Sleep(2 * time.Second)
+				status := pay.Query(orderId)
+				fmt.Println("status:", status)
+				if status == "OD" {
+					g.balance[sender.ID()] += 10
+					msg.ReplyText("支付成功，剩余次数为:" + strconv.Itoa(g.balance[sender.ID()]))
+					g.status[sender.ID()] = 1
+					msg.ReplyText("请输入出生年月，示例：2020-01-01 22:00")
+					return nil
+				}
+			}
+			msg.ReplyText("支付失败，算命结束")
+			msg.ReplyText("输入 开始算命 进行算命")
+			return nil
+		}
+		msg.ReplyText("检测到剩余次数为:" + strconv.Itoa(g.balance[sender.ID()]))
 		msg.ReplyText("请输入出生年月，示例：2020-01-01 22:00")
 		g.status[sender.ID()] = 1
 		return nil
@@ -92,7 +126,7 @@ func (g *UserMessageHandler) Reply1(msg *openwechat.Message) error {
 		return err
 	}
 	// 提取年、月、日和小时
-	g.info[sender.ID()] = make(map[string]interface{})
+
 	g.info[sender.ID()]["year"] = dateTime.Year()
 	g.info[sender.ID()]["month"] = int(dateTime.Month())
 	g.info[sender.ID()]["day"] = dateTime.Day()
@@ -119,7 +153,7 @@ func (g *UserMessageHandler) Reply2(msg *openwechat.Message) error {
 	case "男", "女":
 		g.info[sender.ID()]["gender"] = requestText
 		g.status[sender.ID()] = 3
-		msg.ReplyText("请输入您要算的类型，选择 八字 或 紫薇")
+		msg.ReplyText("请输入您要算的类型，选择 八字 或 紫薇斗数")
 	default:
 		msg.ReplyText("请输入正确的性别，示例：男")
 	}
@@ -138,7 +172,7 @@ func (g *UserMessageHandler) Reply3(msg *openwechat.Message) error {
 		return nil
 	}
 	switch requestText {
-	case "八字", "紫薇":
+	case "八字", "紫薇斗数":
 		g.info[sender.ID()]["mingpan"] = requestText
 		for i := 0; i < retryCount; i++ {
 			res := create_gpt(g.info[sender.ID()])
@@ -153,7 +187,7 @@ func (g *UserMessageHandler) Reply3(msg *openwechat.Message) error {
 		msg.ReplyText("算命大师出错了，已结束算命，请稍后重试")
 		g.status[sender.ID()] = 0
 	default:
-		msg.ReplyText("请输入正确的类型，选择 八字 或 紫薇")
+		msg.ReplyText("请输入正确的类型，选择 八字 或 紫薇斗数")
 	}
 	return nil
 }
@@ -169,11 +203,19 @@ func (g *UserMessageHandler) Reply4(msg *openwechat.Message) error {
 		g.status[sender.ID()] = 0
 		return nil
 	}
+	if g.balance[sender.ID()] == 0 {
+		msg.ReplyText("本次算命结束，余额不足，请充值")
+		g.status[sender.ID()] = 0
+		return nil
+	}
+	msg.ReplyText("算命大师收到啦，正在拼命算命中，请稍后。。")
 	g.info[sender.ID()]["query_text"] = requestText
 	for i := 0; i < retryCount; i++ {
 		res := conversation_gpt(g.info[sender.ID()])
 		if res["status"] == "success" {
 			msg.ReplyText(res["chat_messages"].(string))
+			g.balance[sender.ID()]--
+			msg.ReplyText("剩余次数为:" + strconv.Itoa(g.balance[sender.ID()]))
 			return nil
 		}
 	}
